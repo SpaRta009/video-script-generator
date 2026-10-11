@@ -1017,7 +1017,7 @@ h1{overflow-wrap:anywhere;line-height:1.25}
         <div class="gen-field">
             <label class="gen-field-label" data-i18n="dur" data-icon="timer" for="duration-slider"></label>
             <div class="slider-wrap">
-                <input type="range" id="duration-slider" min="1" max="30" value="5" step="1">
+                <input type="range" id="duration-slider" min="1" max="120" value="5" step="1">
                 <span class="slider-value" id="duration-value">5s</span>
             </div>
             <div class="frames-info" id="frames-info">→ 121 frames (8×15+1)</div>
@@ -1251,7 +1251,7 @@ const FRAME_RATE = 24;
 
 let createIntervalMs = 30000;
 const POLL_INTERVAL_SEC = 5;
-const MAX_POLL_ATTEMPTS = 360;
+const MAX_POLL_ATTEMPTS = 1000;
 const MAX_TOTAL_TIME_MS = 20 * 60 * 1000; // 20 min max par tentative
 const STALL_WARNING_MS = 2 * 60 * 1000; // avertit si la progression ne bouge plus depuis 2 min
 const STALL_ABORT_MS = 5 * 60 * 1000;   // ⭐ tâche considérée bloquée côté Agnes après 5 min sans progression
@@ -1264,7 +1264,7 @@ const MAX_IMAGE_SIZE = 12 * 1024 * 1024;
 const MAX_CHARACTERS = 10;
 const MAX_SCRIPT_LENGTH = 5000;
 const MAX_SHOTS = 20;
-const MAX_DURATION = 30;
+const MAX_DURATION = 120;
 
 let MEMORY_API_KEY = '';
 let videoHistory = {};
@@ -1696,7 +1696,8 @@ const VIDEO_STYLES = [
     { id: 'noir', name: 'Film Noir', emoji: '', desc: 'N&B', prompt: 'classic film noir, high contrast black and white' },
     { id: 'vhs', name: 'VHS Rétro', emoji: '', desc: 'Cassette', prompt: 'vintage VHS aesthetic' },
     { id: '3d-render', name: '3D Render', emoji: '', desc: 'Blender', prompt: 'professional 3D render, Blender / Unreal' },
-    { id: 'vintage', name: 'Vintage', emoji: '', desc: 'Ancien', prompt: 'vintage photography style, film grain' }
+    { id: 'vintage', name: 'Vintage', emoji: '', desc: 'Ancien', prompt: 'vintage photography style, film grain' },
+    { id: 'autre', name: 'Autre', emoji: '', desc: 'Ton style', prompt: '' }
 ];
 
 const CAMERA_CHIPS = [
@@ -2011,8 +2012,8 @@ function renderVideoStyles() {
     c.innerHTML = VIDEO_STYLES.map(s => `
         <div class="video-style-card ${state.selectedVideoStyle === s.id ? 'selected' : ''}" data-vstyle="${s.id}">
                         <div class="vs-ic">${ic(STYLE_ICON[s.id] || 'film')}</div>
-            <div class="vs-name">${esc(s.name)}</div>
-            <div class="vs-desc">${esc(s.desc)}</div>
+            <div class="vs-name">${esc(s.id === 'autre' ? t('other') : s.name)}</div>
+            <div class="vs-desc">${esc(s.id === 'autre' ? t('otherDesc') : s.desc)}</div>
         </div>
     `).join('');
     c.querySelectorAll('[data-vstyle]').forEach(el => {
@@ -2020,6 +2021,7 @@ function renderVideoStyles() {
             if (!state.sectionsEnabled['video-style']) return;
             state.selectedVideoStyle = el.dataset.vstyle;
             renderVideoStyles();
+            refreshOthers(true);
         });
     });
 }
@@ -2243,7 +2245,7 @@ function updateFramesInfo() {
     if (!slider || !info) return;
     const seconds = parseInt(slider.value, 10);
     const { n, frames, actualSeconds } = getFramesInfo(seconds);
-    info.textContent = `→ ${frames} frames (8×${n}+1) ≈ ${actualSeconds}s`;
+    info.textContent = `→ ${frames} frames (8×${n}+1) ≈ ${actualSeconds}s` + (seconds > 30 ? ' · ' + t('long') : '');
 }
 
 function applyProfile() {
@@ -2303,6 +2305,7 @@ function applyProfile() {
     });
 
     renderCharacters();
+    refreshOthers();
     updateGenerateBtn();
 }
 
@@ -2312,7 +2315,7 @@ function buildPrompt(shotIndex) {
     const resolution = RESOLUTIONS.find(r => r.id === state.selectedResolution);
     const parts = [];
 
-    if (state.sectionsEnabled['video-style'] && style) parts.push(`VISUAL STYLE: ${style.prompt}.`);
+    if (state.sectionsEnabled['video-style'] && style) { const sp = style.id === 'autre' ? ((document.getElementById('vstyle-custom') || { value: '' }).value || '').trim() : style.prompt; if (sp) parts.push(`VISUAL STYLE: ${sp}.`); }
     const _sc = state.mainScript.normalize('NFC').trim(), _lg = detectLang(_sc);
     parts.push('SCRIPT (written in ' + _lg + '; understand its full meaning and depict it faithfully as a visual scene; any spoken dialogue stays in ' + _lg + '): ' + _sc + '.');
 
@@ -2323,19 +2326,20 @@ function buildPrompt(shotIndex) {
     }
 
     if (state.sectionsEnabled.scenario) {
-        const moment = document.getElementById('sc-moment').value;
+        const moment = selVal('sc-moment');
         const action = document.getElementById('sc-action').value.trim();
-        const finish = document.getElementById('sc-finish').value;
+        const finish = selVal('sc-finish');
         const extra = document.getElementById('sc-extra').value.trim();
         if (moment) parts.push('Moment: ' + moment + '.');
         if (action) parts.push('Key action: ' + action + '.');
         if (finish) parts.push('Outcome: ' + finish + '.');
         if (extra) parts.push('Additional: ' + extra + '.');
-        if (state.selectedChips.ambiance.length) {
+        {
             const labels = state.selectedChips.ambiance.map(id => {
                 const chip = genre ? genre.ambiance.find(c => c.id === id) : null;
                 return chip ? chip.label : '';
             }).filter(Boolean);
+            const oa = chipOther('ambiance-chips'); if (oa) labels.push(oa);
             if (labels.length) parts.push('Atmosphere: ' + labels.join(', ') + '.');
         }
     }
@@ -2364,15 +2368,16 @@ function buildPrompt(shotIndex) {
             'realistic': 'broadcast TV quality', 'ultra-realistic': 'ultra photorealistic 4K',
             'epic': 'epic blockbuster quality', 'anime': 'anime animation style', 'vintage': 'vintage footage'
         };
-        if (qualityMap[quality]) parts.push('Render quality: ' + qualityMap[quality] + '.');
+        const qText = quality === 'autre' ? selVal('quality-select') : qualityMap[quality]; if (qText) parts.push('Render quality: ' + qText + '.');
         const cameraMap = {
             'wide': 'wide shot', 'closeup': 'tight close-up', 'tracking': 'tracking shot',
             'drone': 'aerial drone shot', 'pov': 'first-person POV', 'slowmo': 'extreme slow motion',
             'zoom': 'fast zoom push-in', 'handheld': 'handheld shaky camera',
             'orbit': 'orbiting camera', 'crane': 'crane shot'
         };
-        if (state.selectedChips.camera.length) {
+        {
             const cams = state.selectedChips.camera.map(id => cameraMap[id]).filter(Boolean);
+            const oc = chipOther('camera-chips'); if (oc) cams.push(oc);
             if (cams.length) parts.push('Camera: ' + cams.join(', ') + '.');
         }
         const weatherMap = {
@@ -2380,8 +2385,9 @@ function buildPrompt(shotIndex) {
             'fog': 'foggy atmosphere', 'night': 'night time', 'goldenhour': 'golden hour',
             'storm': 'stormy weather', 'windy': 'strong wind'
         };
-        if (state.selectedChips.weather.length) {
+        {
             const ws = state.selectedChips.weather.map(id => weatherMap[id]).filter(Boolean);
+            const ow = chipOther('weather-chips'); if (ow) ws.push(ow);
             if (ws.length) parts.push('Weather: ' + ws.join(', ') + '.');
         }
         const effectMap = {
@@ -2390,8 +2396,9 @@ function buildPrompt(shotIndex) {
             'lightning': 'lightning', 'crowdflash': 'camera flashes',
             'shockwave': 'shockwave', 'fireworks': 'fireworks', 'bokeh': 'glowing bokeh'
         };
-        if (state.selectedChips.effects.length) {
+        {
             const es = state.selectedChips.effects.map(id => effectMap[id]).filter(Boolean);
+            const oe = chipOther('effects-chips'); if (oe) es.push(oe);
             if (es.length) parts.push('Effects: ' + es.join(', ') + '.');
         }
         const audioMap = {
@@ -2399,7 +2406,7 @@ function buildPrompt(shotIndex) {
             'rap-beat': 'Sound: rap/trap beat', 'silent': 'Sound: dramatic silence',
             'emotional-piano': 'Sound: emotional piano music'
         };
-        if (audioMap[audio]) parts.push(audioMap[audio] + '.');
+        if (audio === 'autre') { const ca = selVal('audio-select'); if (ca) parts.push('Sound: ' + ca + '.'); } else if (audioMap[audio]) parts.push(audioMap[audio] + '.');
     }
 
     if (resolution) parts.push(resolution.prompt + '.');
@@ -2552,7 +2559,7 @@ async function pollVideo(id, onProgress, maxTimeMs) {
                 lastProgress = progress;
                 lastProgressChangeTime = Date.now();
                 stallWarned = false;
-            } else if ((Date.now() - lastProgressChangeTime) > STALL_ABORT_MS && status !== 'completed' && status !== 'succeeded' && status !== 'done') {
+            } else if ((Date.now() - lastProgressChangeTime) > (STALL_ABORT_MS + (state.durationSeconds || 5) * 5000) && status !== 'completed' && status !== 'succeeded' && status !== 'done') {
                 const se = new Error('STALL : progression bloquée à ' + progress + '% depuis ' + Math.round((Date.now() - lastProgressChangeTime) / 60000) + ' min (video_id: ' + id + ')');
                 se.isStall = true;
                 se.fatal = true;
@@ -2598,7 +2605,7 @@ async function generateWithRetry(prompt, onProgress, label) {
                 onProgress('Relance ' + attempt + '/' + MAX_STALL_RETRIES + '…');
             }
             const videoId = await createVideoTask(prompt);
-            return await pollVideo(videoId, onProgress, MAX_TOTAL_TIME_MS);
+            return await pollVideo(videoId, onProgress, MAX_TOTAL_TIME_MS + (state.durationSeconds || 5) * 20000);
         } catch (e) {
             lastErr = e;
             if (e.isStall && attempt < MAX_STALL_RETRIES) {
@@ -2985,7 +2992,7 @@ function stopGeneration() {
 }
 
 const LANGS={"fr": "Français", "ar": "العربية", "es": "Español", "en": "English", "it": "Italiano", "pt": "Português", "ru": "Русский", "zh": "中文", "ja": "日本語", "ko": "한국어"};
-const I18N={"fr":{"lang":"Langue","sub":"Écris ton script, contrôle tout, génère","saveKey":"Enregistrer la clé","testKey":"Tester la clé","noKey":"Aucune clé API enregistrée","keyOn":"Clé active","scriptT":"Écris ton script vidéo","scriptH":"Décris exactement ce que tu veux voir, dans la langue de ton choix.","tip":"Plus tu es précis, meilleur sera le résultat","resT":"Format de la vidéo","genT":"Contrôles de génération","shots":"Nombre de plans","dur":"Durée (secondes)","gen":"Générer la vidéo","needKey":"Ajoute ta clé API","needScript":"Écris ton script","busy":"Génération en cours…","cancel":"Annuler","gal":"Vidéos générées","dl":"Télécharger","open":"Ouvrir","redo":"Refaire","sStyle":"Style visuel","sChar":"Personnages","sScen":"Scénario détaillé","sFx":"Effets avancés","sInsp":"Images d'inspiration","sUni":"Univers / Contexte","diag":"Diagnostic en temps réel","opt":"optionnel","dlStart":"Téléchargement…","dlOk":"Téléchargement lancé","dlFail":"Téléchargement impossible, ouverture dans un onglet","ph":"Ex : Un chevalier en armure dorée affronte un dragon au coucher du soleil.","del":"Supprimer","clearAll":"Tout effacer","clearQ":"Supprimer toutes les vidéos de la galerie ?","expired":"Lien expiré : télécharge-la à nouveau ou refais-la"},"ar":{"lang":"اللغة","sub":"اكتب السيناريو، تحكّم بكل شيء، ثم أنشئ","saveKey":"حفظ المفتاح","testKey":"اختبار المفتاح","noKey":"لا يوجد مفتاح API محفوظ","keyOn":"المفتاح نشط","scriptT":"اكتب سيناريو الفيديو","scriptH":"صِف بدقة ما تريد رؤيته، بأي لغة تختارها.","tip":"كلما كنت أدق، كانت النتيجة أفضل","resT":"صيغة الفيديو","genT":"خيارات الإنشاء","shots":"عدد اللقطات","dur":"المدة (ثوانٍ)","gen":"إنشاء الفيديو","needKey":"أضف مفتاح API","needScript":"اكتب السيناريو","busy":"جارٍ الإنشاء…","cancel":"إلغاء","gal":"الفيديوهات المُنشأة","dl":"تحميل","open":"فتح","redo":"إعادة","sStyle":"النمط البصري","sChar":"الشخصيات","sScen":"سيناريو مفصّل","sFx":"مؤثرات متقدمة","sInsp":"صور إلهام","sUni":"العالم / السياق","diag":"التشخيص المباشر","opt":"اختياري","dlStart":"جارٍ التحميل…","dlOk":"بدأ التحميل","dlFail":"تعذّر التحميل، سيُفتح في تبويب","ph":"مثال: فارس بدرع ذهبي يواجه تنينًا عند الغروب.","del":"حذف","clearAll":"مسح الكل","clearQ":"حذف جميع الفيديوهات من المعرض؟","expired":"انتهت صلاحية الرابط: أعد إنشاء الفيديو"},"es":{"lang":"Idioma","sub":"Escribe tu guion, controla todo, genera","saveKey":"Guardar clave","testKey":"Probar clave","noKey":"Ninguna clave API guardada","keyOn":"Clave activa","scriptT":"Escribe el guion de tu vídeo","scriptH":"Describe exactamente lo que quieres ver, en el idioma que prefieras.","tip":"Cuanto más preciso, mejor resultado","resT":"Formato del vídeo","genT":"Controles de generación","shots":"Número de planos","dur":"Duración (segundos)","gen":"Generar vídeo","needKey":"Añade tu clave API","needScript":"Escribe tu guion","busy":"Generando…","cancel":"Cancelar","gal":"Vídeos generados","dl":"Descargar","open":"Abrir","redo":"Rehacer","sStyle":"Estilo visual","sChar":"Personajes","sScen":"Guion detallado","sFx":"Efectos avanzados","sInsp":"Imágenes de inspiración","sUni":"Universo / Contexto","diag":"Diagnóstico en tiempo real","opt":"opcional","dlStart":"Descargando…","dlOk":"Descarga iniciada","dlFail":"No se pudo descargar; se abre en una pestaña","ph":"Ej.: Un caballero de armadura dorada se enfrenta a un dragón al atardecer.","del":"Eliminar","clearAll":"Borrar todo","clearQ":"¿Eliminar todos los vídeos de la galería?","expired":"Enlace caducado: vuelve a generarlo"},"en":{"lang":"Language","sub":"Write your script, control everything, generate","saveKey":"Save key","testKey":"Test key","noKey":"No API key saved","keyOn":"Key active","scriptT":"Write your video script","scriptH":"Describe exactly what you want to see, in the language you prefer.","tip":"The more precise, the better the result","resT":"Video format","genT":"Generation controls","shots":"Number of shots","dur":"Duration (seconds)","gen":"Generate video","needKey":"Add your API key","needScript":"Write your script","busy":"Generating…","cancel":"Cancel","gal":"Generated videos","dl":"Download","open":"Open","redo":"Redo","sStyle":"Visual style","sChar":"Characters","sScen":"Detailed scenario","sFx":"Advanced effects","sInsp":"Inspiration images","sUni":"Universe / Context","diag":"Live diagnostics","opt":"optional","dlStart":"Downloading…","dlOk":"Download started","dlFail":"Download failed, opening in a tab","ph":"E.g.: A knight in golden armor faces a dragon at sunset.","del":"Delete","clearAll":"Clear all","clearQ":"Delete all videos from the gallery?","expired":"Link expired: generate it again"},"it":{"lang":"Lingua","sub":"Scrivi il copione, controlla tutto, genera","saveKey":"Salva chiave","testKey":"Testa chiave","noKey":"Nessuna chiave API salvata","keyOn":"Chiave attiva","scriptT":"Scrivi il copione del video","scriptH":"Descrivi esattamente ciò che vuoi vedere, nella lingua che preferisci.","tip":"Più sei preciso, migliore sarà il risultato","resT":"Formato del video","genT":"Controlli di generazione","shots":"Numero di inquadrature","dur":"Durata (secondi)","gen":"Genera video","needKey":"Aggiungi la chiave API","needScript":"Scrivi il copione","busy":"Generazione in corso…","cancel":"Annulla","gal":"Video generati","dl":"Scarica","open":"Apri","redo":"Rifai","sStyle":"Stile visivo","sChar":"Personaggi","sScen":"Scenario dettagliato","sFx":"Effetti avanzati","sInsp":"Immagini di ispirazione","sUni":"Universo / Contesto","diag":"Diagnostica in tempo reale","opt":"opzionale","dlStart":"Download in corso…","dlOk":"Download avviato","dlFail":"Download non riuscito, apertura in una scheda","ph":"Es.: Un cavaliere in armatura dorata affronta un drago al tramonto.","del":"Elimina","clearAll":"Cancella tutto","clearQ":"Eliminare tutti i video dalla galleria?","expired":"Link scaduto: rigeneralo"},"pt":{"lang":"Idioma","sub":"Escreva o roteiro, controle tudo, gere","saveKey":"Salvar chave","testKey":"Testar chave","noKey":"Nenhuma chave API salva","keyOn":"Chave ativa","scriptT":"Escreva o roteiro do vídeo","scriptH":"Descreva exatamente o que quer ver, no idioma que preferir.","tip":"Quanto mais preciso, melhor o resultado","resT":"Formato do vídeo","genT":"Controles de geração","shots":"Número de planos","dur":"Duração (segundos)","gen":"Gerar vídeo","needKey":"Adicione sua chave API","needScript":"Escreva o roteiro","busy":"Gerando…","cancel":"Cancelar","gal":"Vídeos gerados","dl":"Baixar","open":"Abrir","redo":"Refazer","sStyle":"Estilo visual","sChar":"Personagens","sScen":"Cenário detalhado","sFx":"Efeitos avançados","sInsp":"Imagens de inspiração","sUni":"Universo / Contexto","diag":"Diagnóstico em tempo real","opt":"opcional","dlStart":"Baixando…","dlOk":"Download iniciado","dlFail":"Falha no download, abrindo em uma aba","ph":"Ex.: Um cavaleiro de armadura dourada enfrenta um dragão ao pôr do sol.","del":"Excluir","clearAll":"Limpar tudo","clearQ":"Excluir todos os vídeos da galeria?","expired":"Link expirado: gere novamente"},"ru":{"lang":"Язык","sub":"Напишите сценарий, управляйте всем, создавайте","saveKey":"Сохранить ключ","testKey":"Проверить ключ","noKey":"API-ключ не сохранён","keyOn":"Ключ активен","scriptT":"Напишите сценарий видео","scriptH":"Опишите точно, что хотите увидеть, на любом языке.","tip":"Чем точнее описание, тем лучше результат","resT":"Формат видео","genT":"Параметры генерации","shots":"Количество планов","dur":"Длительность (сек.)","gen":"Создать видео","needKey":"Добавьте API-ключ","needScript":"Напишите сценарий","busy":"Идёт генерация…","cancel":"Отмена","gal":"Созданные видео","dl":"Скачать","open":"Открыть","redo":"Переделать","sStyle":"Визуальный стиль","sChar":"Персонажи","sScen":"Подробный сценарий","sFx":"Расширенные эффекты","sInsp":"Изображения-вдохновение","sUni":"Мир / Контекст","diag":"Диагностика в реальном времени","opt":"необязательно","dlStart":"Скачивание…","dlOk":"Скачивание началось","dlFail":"Не удалось скачать, открываю во вкладке","ph":"Напр.: Рыцарь в золотых доспехах сражается с драконом на закате.","del":"Удалить","clearAll":"Очистить всё","clearQ":"Удалить все видео из галереи?","expired":"Ссылка устарела: создайте видео заново"},"zh":{"lang":"语言","sub":"撰写脚本，掌控一切，一键生成","saveKey":"保存密钥","testKey":"测试密钥","noKey":"尚未保存 API 密钥","keyOn":"密钥已启用","scriptT":"撰写视频脚本","scriptH":"请准确描述你想看到的画面，可使用任何语言。","tip":"描述越精确，效果越好","resT":"视频比例","genT":"生成设置","shots":"镜头数量","dur":"时长（秒）","gen":"生成视频","needKey":"请添加 API 密钥","needScript":"请撰写脚本","busy":"生成中…","cancel":"取消","gal":"已生成的视频","dl":"下载","open":"打开","redo":"重做","sStyle":"视觉风格","sChar":"角色","sScen":"详细剧情","sFx":"高级特效","sInsp":"灵感图片","sUni":"世界 / 背景","diag":"实时诊断","opt":"可选","dlStart":"下载中…","dlOk":"已开始下载","dlFail":"下载失败，已在新标签页打开","ph":"例如：一名金甲骑士在日落时与巨龙对峙。","del":"删除","clearAll":"全部清除","clearQ":"要删除图库中的所有视频吗？","expired":"链接已过期：请重新生成"},"ja":{"lang":"言語","sub":"脚本を書いて、すべてを操作し、生成","saveKey":"キーを保存","testKey":"キーをテスト","noKey":"APIキーが保存されていません","keyOn":"キー有効","scriptT":"動画の脚本を書く","scriptH":"見たい映像を正確に、好きな言語で記述してください。","tip":"具体的なほど良い結果になります","resT":"動画の形式","genT":"生成設定","shots":"ショット数","dur":"長さ（秒）","gen":"動画を生成","needKey":"APIキーを追加","needScript":"脚本を書いてください","busy":"生成中…","cancel":"キャンセル","gal":"生成された動画","dl":"ダウンロード","open":"開く","redo":"やり直す","sStyle":"ビジュアルスタイル","sChar":"キャラクター","sScen":"詳細シナリオ","sFx":"高度なエフェクト","sInsp":"インスピレーション画像","sUni":"世界観 / コンテキスト","diag":"リアルタイム診断","opt":"任意","dlStart":"ダウンロード中…","dlOk":"ダウンロードを開始しました","dlFail":"ダウンロードに失敗、タブで開きます","ph":"例：金の鎧の騎士が夕暮れにドラゴンと対峙する。","del":"削除","clearAll":"すべて消去","clearQ":"ギャラリーの動画をすべて削除しますか？","expired":"リンクの有効期限切れ：再生成してください"},"ko":{"lang":"언어","sub":"스크립트를 쓰고, 모든 것을 제어하고, 생성하세요","saveKey":"키 저장","testKey":"키 테스트","noKey":"저장된 API 키 없음","keyOn":"키 활성","scriptT":"영상 스크립트 작성","scriptH":"보고 싶은 장면을 원하는 언어로 정확히 설명하세요.","tip":"구체적일수록 결과가 좋아집니다","resT":"영상 비율","genT":"생성 설정","shots":"샷 수","dur":"길이(초)","gen":"영상 생성","needKey":"API 키를 추가하세요","needScript":"스크립트를 작성하세요","busy":"생성 중…","cancel":"취소","gal":"생성된 영상","dl":"다운로드","open":"열기","redo":"다시 만들기","sStyle":"비주얼 스타일","sChar":"캐릭터","sScen":"상세 시나리오","sFx":"고급 효과","sInsp":"영감 이미지","sUni":"세계관 / 배경","diag":"실시간 진단","opt":"선택","dlStart":"다운로드 중…","dlOk":"다운로드가 시작되었습니다","dlFail":"다운로드 실패, 새 탭에서 엽니다","ph":"예: 황금 갑옷의 기사가 해질녘 용과 맞선다.","del":"삭제","clearAll":"모두 지우기","clearQ":"갤러리의 모든 영상을 삭제할까요?","expired":"링크 만료: 다시 생성하세요"}};
+const I18N={"fr":{"lang":"Langue","sub":"Écris ton script, contrôle tout, génère","saveKey":"Enregistrer la clé","testKey":"Tester la clé","noKey":"Aucune clé API enregistrée","keyOn":"Clé active","scriptT":"Écris ton script vidéo","scriptH":"Décris exactement ce que tu veux voir, dans la langue de ton choix.","tip":"Plus tu es précis, meilleur sera le résultat","resT":"Format de la vidéo","genT":"Contrôles de génération","shots":"Nombre de plans","dur":"Durée (secondes)","gen":"Générer la vidéo","needKey":"Ajoute ta clé API","needScript":"Écris ton script","busy":"Génération en cours…","cancel":"Annuler","gal":"Vidéos générées","dl":"Télécharger","open":"Ouvrir","redo":"Refaire","sStyle":"Style visuel","sChar":"Personnages","sScen":"Scénario détaillé","sFx":"Effets avancés","sInsp":"Images d'inspiration","sUni":"Univers / Contexte","diag":"Diagnostic en temps réel","opt":"optionnel","dlStart":"Téléchargement…","dlOk":"Téléchargement lancé","dlFail":"Téléchargement impossible, ouverture dans un onglet","ph":"Ex : Un chevalier en armure dorée affronte un dragon au coucher du soleil.","del":"Supprimer","clearAll":"Tout effacer","clearQ":"Supprimer toutes les vidéos de la galerie ?","expired":"Lien expiré : télécharge-la à nouveau ou refais-la","other":"Autre","otherPh":"Précise ici (ou laisse vide)…","otherStylePh":"Décris ton style (ou laisse vide)…","otherChipPh":"Autre : écris ton choix (optionnel)…","otherDesc":"Ton choix","long":"Durée longue : le rendu peut prendre plusieurs minutes"},"ar":{"lang":"اللغة","sub":"اكتب السيناريو، تحكّم بكل شيء، ثم أنشئ","saveKey":"حفظ المفتاح","testKey":"اختبار المفتاح","noKey":"لا يوجد مفتاح API محفوظ","keyOn":"المفتاح نشط","scriptT":"اكتب سيناريو الفيديو","scriptH":"صِف بدقة ما تريد رؤيته، بأي لغة تختارها.","tip":"كلما كنت أدق، كانت النتيجة أفضل","resT":"صيغة الفيديو","genT":"خيارات الإنشاء","shots":"عدد اللقطات","dur":"المدة (ثوانٍ)","gen":"إنشاء الفيديو","needKey":"أضف مفتاح API","needScript":"اكتب السيناريو","busy":"جارٍ الإنشاء…","cancel":"إلغاء","gal":"الفيديوهات المُنشأة","dl":"تحميل","open":"فتح","redo":"إعادة","sStyle":"النمط البصري","sChar":"الشخصيات","sScen":"سيناريو مفصّل","sFx":"مؤثرات متقدمة","sInsp":"صور إلهام","sUni":"العالم / السياق","diag":"التشخيص المباشر","opt":"اختياري","dlStart":"جارٍ التحميل…","dlOk":"بدأ التحميل","dlFail":"تعذّر التحميل، سيُفتح في تبويب","ph":"مثال: فارس بدرع ذهبي يواجه تنينًا عند الغروب.","del":"حذف","clearAll":"مسح الكل","clearQ":"حذف جميع الفيديوهات من المعرض؟","expired":"انتهت صلاحية الرابط: أعد إنشاء الفيديو","other":"أخرى","otherPh":"حدّد هنا (أو اتركه فارغًا)…","otherStylePh":"صِف نمطك (أو اتركه فارغًا)…","otherChipPh":"أخرى: اكتب اختيارك (اختياري)…","otherDesc":"اختيارك","long":"مدة طويلة: قد يستغرق الإنشاء عدة دقائق"},"es":{"lang":"Idioma","sub":"Escribe tu guion, controla todo, genera","saveKey":"Guardar clave","testKey":"Probar clave","noKey":"Ninguna clave API guardada","keyOn":"Clave activa","scriptT":"Escribe el guion de tu vídeo","scriptH":"Describe exactamente lo que quieres ver, en el idioma que prefieras.","tip":"Cuanto más preciso, mejor resultado","resT":"Formato del vídeo","genT":"Controles de generación","shots":"Número de planos","dur":"Duración (segundos)","gen":"Generar vídeo","needKey":"Añade tu clave API","needScript":"Escribe tu guion","busy":"Generando…","cancel":"Cancelar","gal":"Vídeos generados","dl":"Descargar","open":"Abrir","redo":"Rehacer","sStyle":"Estilo visual","sChar":"Personajes","sScen":"Guion detallado","sFx":"Efectos avanzados","sInsp":"Imágenes de inspiración","sUni":"Universo / Contexto","diag":"Diagnóstico en tiempo real","opt":"opcional","dlStart":"Descargando…","dlOk":"Descarga iniciada","dlFail":"No se pudo descargar; se abre en una pestaña","ph":"Ej.: Un caballero de armadura dorada se enfrenta a un dragón al atardecer.","del":"Eliminar","clearAll":"Borrar todo","clearQ":"¿Eliminar todos los vídeos de la galería?","expired":"Enlace caducado: vuelve a generarlo","other":"Otro","otherPh":"Precisa aquí (o déjalo vacío)…","otherStylePh":"Describe tu estilo (o déjalo vacío)…","otherChipPh":"Otro: escribe tu opción (opcional)…","otherDesc":"Tu elección","long":"Duración larga: el renderizado puede tardar varios minutos"},"en":{"lang":"Language","sub":"Write your script, control everything, generate","saveKey":"Save key","testKey":"Test key","noKey":"No API key saved","keyOn":"Key active","scriptT":"Write your video script","scriptH":"Describe exactly what you want to see, in the language you prefer.","tip":"The more precise, the better the result","resT":"Video format","genT":"Generation controls","shots":"Number of shots","dur":"Duration (seconds)","gen":"Generate video","needKey":"Add your API key","needScript":"Write your script","busy":"Generating…","cancel":"Cancel","gal":"Generated videos","dl":"Download","open":"Open","redo":"Redo","sStyle":"Visual style","sChar":"Characters","sScen":"Detailed scenario","sFx":"Advanced effects","sInsp":"Inspiration images","sUni":"Universe / Context","diag":"Live diagnostics","opt":"optional","dlStart":"Downloading…","dlOk":"Download started","dlFail":"Download failed, opening in a tab","ph":"E.g.: A knight in golden armor faces a dragon at sunset.","del":"Delete","clearAll":"Clear all","clearQ":"Delete all videos from the gallery?","expired":"Link expired: generate it again","other":"Other","otherPh":"Specify here (or leave empty)…","otherStylePh":"Describe your style (or leave empty)…","otherChipPh":"Other: type your choice (optional)…","otherDesc":"Your choice","long":"Long duration: rendering may take several minutes"},"it":{"lang":"Lingua","sub":"Scrivi il copione, controlla tutto, genera","saveKey":"Salva chiave","testKey":"Testa chiave","noKey":"Nessuna chiave API salvata","keyOn":"Chiave attiva","scriptT":"Scrivi il copione del video","scriptH":"Descrivi esattamente ciò che vuoi vedere, nella lingua che preferisci.","tip":"Più sei preciso, migliore sarà il risultato","resT":"Formato del video","genT":"Controlli di generazione","shots":"Numero di inquadrature","dur":"Durata (secondi)","gen":"Genera video","needKey":"Aggiungi la chiave API","needScript":"Scrivi il copione","busy":"Generazione in corso…","cancel":"Annulla","gal":"Video generati","dl":"Scarica","open":"Apri","redo":"Rifai","sStyle":"Stile visivo","sChar":"Personaggi","sScen":"Scenario dettagliato","sFx":"Effetti avanzati","sInsp":"Immagini di ispirazione","sUni":"Universo / Contesto","diag":"Diagnostica in tempo reale","opt":"opzionale","dlStart":"Download in corso…","dlOk":"Download avviato","dlFail":"Download non riuscito, apertura in una scheda","ph":"Es.: Un cavaliere in armatura dorata affronta un drago al tramonto.","del":"Elimina","clearAll":"Cancella tutto","clearQ":"Eliminare tutti i video dalla galleria?","expired":"Link scaduto: rigeneralo","other":"Altro","otherPh":"Specifica qui (o lascia vuoto)…","otherStylePh":"Descrivi il tuo stile (o lascia vuoto)…","otherChipPh":"Altro: scrivi la tua scelta (facoltativo)…","otherDesc":"La tua scelta","long":"Durata lunga: il rendering può richiedere diversi minuti"},"pt":{"lang":"Idioma","sub":"Escreva o roteiro, controle tudo, gere","saveKey":"Salvar chave","testKey":"Testar chave","noKey":"Nenhuma chave API salva","keyOn":"Chave ativa","scriptT":"Escreva o roteiro do vídeo","scriptH":"Descreva exatamente o que quer ver, no idioma que preferir.","tip":"Quanto mais preciso, melhor o resultado","resT":"Formato do vídeo","genT":"Controles de geração","shots":"Número de planos","dur":"Duração (segundos)","gen":"Gerar vídeo","needKey":"Adicione sua chave API","needScript":"Escreva o roteiro","busy":"Gerando…","cancel":"Cancelar","gal":"Vídeos gerados","dl":"Baixar","open":"Abrir","redo":"Refazer","sStyle":"Estilo visual","sChar":"Personagens","sScen":"Cenário detalhado","sFx":"Efeitos avançados","sInsp":"Imagens de inspiração","sUni":"Universo / Contexto","diag":"Diagnóstico em tempo real","opt":"opcional","dlStart":"Baixando…","dlOk":"Download iniciado","dlFail":"Falha no download, abrindo em uma aba","ph":"Ex.: Um cavaleiro de armadura dourada enfrenta um dragão ao pôr do sol.","del":"Excluir","clearAll":"Limpar tudo","clearQ":"Excluir todos os vídeos da galeria?","expired":"Link expirado: gere novamente","other":"Outro","otherPh":"Especifique aqui (ou deixe vazio)…","otherStylePh":"Descreva seu estilo (ou deixe vazio)…","otherChipPh":"Outro: escreva sua opção (opcional)…","otherDesc":"Sua escolha","long":"Duração longa: a renderização pode levar vários minutos"},"ru":{"lang":"Язык","sub":"Напишите сценарий, управляйте всем, создавайте","saveKey":"Сохранить ключ","testKey":"Проверить ключ","noKey":"API-ключ не сохранён","keyOn":"Ключ активен","scriptT":"Напишите сценарий видео","scriptH":"Опишите точно, что хотите увидеть, на любом языке.","tip":"Чем точнее описание, тем лучше результат","resT":"Формат видео","genT":"Параметры генерации","shots":"Количество планов","dur":"Длительность (сек.)","gen":"Создать видео","needKey":"Добавьте API-ключ","needScript":"Напишите сценарий","busy":"Идёт генерация…","cancel":"Отмена","gal":"Созданные видео","dl":"Скачать","open":"Открыть","redo":"Переделать","sStyle":"Визуальный стиль","sChar":"Персонажи","sScen":"Подробный сценарий","sFx":"Расширенные эффекты","sInsp":"Изображения-вдохновение","sUni":"Мир / Контекст","diag":"Диагностика в реальном времени","opt":"необязательно","dlStart":"Скачивание…","dlOk":"Скачивание началось","dlFail":"Не удалось скачать, открываю во вкладке","ph":"Напр.: Рыцарь в золотых доспехах сражается с драконом на закате.","del":"Удалить","clearAll":"Очистить всё","clearQ":"Удалить все видео из галереи?","expired":"Ссылка устарела: создайте видео заново","other":"Другое","otherPh":"Уточните здесь (или оставьте пустым)…","otherStylePh":"Опишите свой стиль (или оставьте пустым)…","otherChipPh":"Другое: введите свой вариант (необязательно)…","otherDesc":"Ваш выбор","long":"Большая длительность: рендеринг может занять несколько минут"},"zh":{"lang":"语言","sub":"撰写脚本，掌控一切，一键生成","saveKey":"保存密钥","testKey":"测试密钥","noKey":"尚未保存 API 密钥","keyOn":"密钥已启用","scriptT":"撰写视频脚本","scriptH":"请准确描述你想看到的画面，可使用任何语言。","tip":"描述越精确，效果越好","resT":"视频比例","genT":"生成设置","shots":"镜头数量","dur":"时长（秒）","gen":"生成视频","needKey":"请添加 API 密钥","needScript":"请撰写脚本","busy":"生成中…","cancel":"取消","gal":"已生成的视频","dl":"下载","open":"打开","redo":"重做","sStyle":"视觉风格","sChar":"角色","sScen":"详细剧情","sFx":"高级特效","sInsp":"灵感图片","sUni":"世界 / 背景","diag":"实时诊断","opt":"可选","dlStart":"下载中…","dlOk":"已开始下载","dlFail":"下载失败，已在新标签页打开","ph":"例如：一名金甲骑士在日落时与巨龙对峙。","del":"删除","clearAll":"全部清除","clearQ":"要删除图库中的所有视频吗？","expired":"链接已过期：请重新生成","other":"其他","otherPh":"在此说明（也可留空）…","otherStylePh":"描述你的风格（也可留空）…","otherChipPh":"其他：输入你的选择（可选）…","otherDesc":"自定义","long":"时长较长：渲染可能需要数分钟"},"ja":{"lang":"言語","sub":"脚本を書いて、すべてを操作し、生成","saveKey":"キーを保存","testKey":"キーをテスト","noKey":"APIキーが保存されていません","keyOn":"キー有効","scriptT":"動画の脚本を書く","scriptH":"見たい映像を正確に、好きな言語で記述してください。","tip":"具体的なほど良い結果になります","resT":"動画の形式","genT":"生成設定","shots":"ショット数","dur":"長さ（秒）","gen":"動画を生成","needKey":"APIキーを追加","needScript":"脚本を書いてください","busy":"生成中…","cancel":"キャンセル","gal":"生成された動画","dl":"ダウンロード","open":"開く","redo":"やり直す","sStyle":"ビジュアルスタイル","sChar":"キャラクター","sScen":"詳細シナリオ","sFx":"高度なエフェクト","sInsp":"インスピレーション画像","sUni":"世界観 / コンテキスト","diag":"リアルタイム診断","opt":"任意","dlStart":"ダウンロード中…","dlOk":"ダウンロードを開始しました","dlFail":"ダウンロードに失敗、タブで開きます","ph":"例：金の鎧の騎士が夕暮れにドラゴンと対峙する。","del":"削除","clearAll":"すべて消去","clearQ":"ギャラリーの動画をすべて削除しますか？","expired":"リンクの有効期限切れ：再生成してください","other":"その他","otherPh":"ここに入力（空欄でも可）…","otherStylePh":"スタイルを記述（空欄でも可）…","otherChipPh":"その他：自由に入力（任意）…","otherDesc":"自由入力","long":"長尺：レンダリングに数分かかる場合があります"},"ko":{"lang":"언어","sub":"스크립트를 쓰고, 모든 것을 제어하고, 생성하세요","saveKey":"키 저장","testKey":"키 테스트","noKey":"저장된 API 키 없음","keyOn":"키 활성","scriptT":"영상 스크립트 작성","scriptH":"보고 싶은 장면을 원하는 언어로 정확히 설명하세요.","tip":"구체적일수록 결과가 좋아집니다","resT":"영상 비율","genT":"생성 설정","shots":"샷 수","dur":"길이(초)","gen":"영상 생성","needKey":"API 키를 추가하세요","needScript":"스크립트를 작성하세요","busy":"생성 중…","cancel":"취소","gal":"생성된 영상","dl":"다운로드","open":"열기","redo":"다시 만들기","sStyle":"비주얼 스타일","sChar":"캐릭터","sScen":"상세 시나리오","sFx":"고급 효과","sInsp":"영감 이미지","sUni":"세계관 / 배경","diag":"실시간 진단","opt":"선택","dlStart":"다운로드 중…","dlOk":"다운로드가 시작되었습니다","dlFail":"다운로드 실패, 새 탭에서 엽니다","ph":"예: 황금 갑옷의 기사가 해질녘 용과 맞선다.","del":"삭제","clearAll":"모두 지우기","clearQ":"갤러리의 모든 영상을 삭제할까요?","expired":"링크 만료: 다시 생성하세요","other":"기타","otherPh":"여기에 입력(비워도 됨)…","otherStylePh":"스타일 설명(비워도 됨)…","otherChipPh":"기타: 원하는 값을 입력(선택)…","otherDesc":"직접 입력","long":"긴 영상: 렌더링에 몇 분 걸릴 수 있습니다"}};
 
 var ICONS={x:'<path d="M18 6 6 18M6 6l12 12"/>',plus:'<path d="M12 5v14M5 12h14"/>',trash:'<path d="M3 6h18M8 6V4h8v2M19 6l-1 14H6L5 6M10 11v6M14 11v6"/>',copy:'<rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h10"/>',chevron:'<path d="m6 9 6 6 6-6"/>',film:'<rect x="3" y="3" width="18" height="18" rx="2"/><path d="M7 3v18M17 3v18M3 8h4M3 12h18M3 16h4M17 8h4M17 16h4"/>',timer:'<circle cx="12" cy="13" r="8"/><path d="M12 9v4l2 2M9 2h6"/>',alert:'<path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0zM12 9v4M12 17h.01"/>',info:'<circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01"/>',okc:'<circle cx="12" cy="12" r="10"/><path d="m9 12 2 2 4-4"/>',xc:'<circle cx="12" cy="12" r="10"/><path d="m15 9-6 6M9 9l6 6"/>',search:'<circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/>',image:'<rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="9" cy="9" r="2"/><path d="m21 15-3.1-3.1a2 2 0 0 0-2.8 0L6 21"/>',camera:'<path d="M14.5 4h-5L7 7H4a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V9a2 2 0 0 0-2-2h-3z"/><circle cx="12" cy="13" r="3"/>',save:'<path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2zM17 21v-8H7v8M7 3v5h8"/>',circle:'<circle cx="12" cy="12" r="9"/>',spinner:'<path d="M21 12a9 9 0 1 1-6.2-8.55"/>',phone:'<rect x="7" y="2" width="10" height="20" rx="2"/><path d="M11 18h2"/>',trophy:'<path d="M8 21h8M12 17v4M7 4h10v5a5 5 0 0 1-10 0zM17 5h3v2a3 3 0 0 1-3 3M7 5H4v2a3 3 0 0 0 3 3"/>',pen:'<path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"/>',ratio:'<rect x="3" y="5" width="18" height="14" rx="2"/>',sliders:'<path d="M4 21v-7M4 10V3M12 21v-9M12 8V3M20 21v-5M20 12V3M1 14h6M9 8h6M17 16h6"/>',key:'<circle cx="7.5" cy="15.5" r="4.5"/><path d="m11 12 9-9M16 7l3 3"/>',check:'<path d="M20 6 9 17l-5-5"/>',download:'<path d="M12 3v12m0 0-4-4m4 4 4-4M4 21h16"/>',link:'<path d="M10 14a5 5 0 0 0 7 0l3-3a5 5 0 0 0-7-7l-1 1M14 10a5 5 0 0 0-7 0l-3 3a5 5 0 0 0 7 7l1-1"/>',refresh:'<path d="M21 12a9 9 0 0 0-15-6.7L3 8M3 3v5h5M3 12a9 9 0 0 0 15 6.7L21 16M21 21v-5h-5"/>'};
 Object.assign(ICONS,{
@@ -3054,7 +3061,7 @@ bell:'<path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9M10.3 21a1.9 1.9 0 0 0 3
 });
 
 // Icône par rubrique / option
-var STYLE_ICON={realistic:'eye',hyperreal:'aperture',cinematic:'film',stickman:'stick',drawing:'pen',manga:'book',anime:'sparkles',cartoon:'smile',pixar:'box',pixel:'grid',watercolor:'droplet',cyberpunk:'zap',noir:'moon',vhs:'tape','3d-render':'layers',vintage:'camera'};
+var STYLE_ICON={realistic:'eye',hyperreal:'aperture',cinematic:'film',stickman:'stick',drawing:'pen',manga:'book',anime:'sparkles',cartoon:'smile',pixar:'box',pixel:'grid',watercolor:'droplet',cyberpunk:'zap',noir:'moon',vhs:'tape','3d-render':'layers',vintage:'camera',autre:'pen'};
 var GENRE_ICON={'tiktok-viral':'music','youtube-vlog':'video',football:'ball',basketball:'basket',mma:'swords',action:'zap',romance:'heart',horror:'ghost',scifi:'rocket'};
 var PRESET_ICON=['film','zap','feather','droplet','smile','star','rocket','ghost'];
 var CHIP_ICON={
@@ -3078,6 +3085,7 @@ function applyLang(){
     const ta=document.getElementById('main-script'); if(ta) ta.placeholder=t('ph');
     const sub=document.getElementById('main-subtitle'); if(sub&&!state.sectionsEnabled.categories) sub.textContent=t('sub');
     updateApiPanel(); updateGenerateBtn();
+    try { renderVideoStyles(); refreshOthers(); } catch (e) {}
 }
 function setLang(l){
     if(!I18N[l]) l='fr'; CUR_LANG=l;
@@ -3133,6 +3141,90 @@ document.addEventListener('keydown',function(e){
 });
 (function(){let q=false;const run=()=>{q=false;try{applyA11y();}catch(e){}};
     new MutationObserver(()=>{if(!q){q=true;requestAnimationFrame(run);}}).observe(document.body,{childList:true,subtree:true,attributes:true,attributeFilter:['class']});})();
+
+
+// ===== "Autre" : choix libre (on peut aussi le laisser vide) =====
+const OTHER_SELECTS = ['sc-moment', 'sc-finish', 'quality-select', 'audio-select'];
+const OTHER_CHIP_GROUPS = ['camera-chips', 'weather-chips', 'effects-chips', 'ambiance-chips'];
+function customIdFor(selId) {
+    return (selId === 'quality-select' ? 'quality' : selId === 'audio-select' ? 'audio' : selId) + '-custom';
+}
+function ensureOther(selId) {
+    const sel = document.getElementById(selId);
+    if (!sel) return;
+    const cid = customIdFor(selId);
+    let inp = document.getElementById(cid);
+    if (!inp) {
+        inp = document.createElement('input');
+        inp.type = 'text'; inp.id = cid; inp.maxLength = 200;
+        inp.style.marginTop = '0.5rem'; inp.style.display = 'none';
+        sel.insertAdjacentElement('afterend', inp);
+    }
+    inp.placeholder = t('otherPh');
+    inp.setAttribute('aria-label', t('other'));
+    let opt = sel.querySelector('option[value="autre"]');
+    if (!opt) { opt = document.createElement('option'); opt.value = 'autre'; sel.appendChild(opt); }
+    opt.textContent = t('other');
+    if (!sel.dataset.otherBound) {
+        sel.dataset.otherBound = '1';
+        sel.addEventListener('change', () => {
+            const show = sel.value === 'autre';
+            inp.style.display = show ? 'block' : 'none';
+            if (show) inp.focus();
+        });
+    }
+    inp.style.display = sel.value === 'autre' ? 'block' : 'none';
+}
+function ensureChipOther(gid) {
+    const g = document.getElementById(gid);
+    if (!g) return;
+    const id = gid + '-custom';
+    let inp = document.getElementById(id);
+    if (!inp) {
+        inp = document.createElement('input');
+        inp.type = 'text'; inp.id = id; inp.maxLength = 200;
+        inp.style.marginBottom = '0.4rem';
+        g.insertAdjacentElement('afterend', inp);
+    }
+    inp.placeholder = t('otherChipPh');
+    inp.setAttribute('aria-label', t('other'));
+}
+function ensureVStyleOther() {
+    const grid = document.getElementById('video-styles-grid');
+    if (!grid) return;
+    let inp = document.getElementById('vstyle-custom');
+    if (!inp) {
+        inp = document.createElement('input');
+        inp.type = 'text'; inp.id = 'vstyle-custom'; inp.maxLength = 200;
+        inp.style.marginTop = '0.7rem'; inp.style.display = 'none';
+        grid.insertAdjacentElement('afterend', inp);
+    }
+    inp.placeholder = t('otherStylePh');
+    inp.setAttribute('aria-label', t('other'));
+    inp.style.display = state.selectedVideoStyle === 'autre' ? 'block' : 'none';
+}
+function refreshOthers(focusStyle) {
+    OTHER_SELECTS.forEach(ensureOther);
+    OTHER_CHIP_GROUPS.forEach(ensureChipOther);
+    ensureVStyleOther();
+    if (focusStyle && state.selectedVideoStyle === 'autre') {
+        const i = document.getElementById('vstyle-custom');
+        if (i && !i.disabled) i.focus();
+    }
+}
+function selVal(selId) {
+    const sel = document.getElementById(selId);
+    if (!sel) return '';
+    if (sel.value === 'autre') {
+        const i = document.getElementById(customIdFor(selId));
+        return i ? i.value.trim() : '';
+    }
+    return sel.value;
+}
+function chipOther(gid) {
+    const i = document.getElementById(gid + '-custom');
+    return i ? i.value.trim() : '';
+}
 
 (function init() {
     console.log('[Video V12] Initialisation...');
